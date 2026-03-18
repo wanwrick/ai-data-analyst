@@ -20,33 +20,31 @@
 ## 📐 Architecture
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│                     AI Data Analyst App                             │
-│                                                                    │
-│  ┌──────────────┐    ┌────────────────────────────────────────┐   │
-│  │   React UI    │───▶│          FastAPI Backend                │   │
-│  │              │    │                                        │   │
-│  │ • Chat input │    │  ┌──────────────────────────────────┐  │   │
-│  │ • Charts     │    │  │     Supervisor Agent (Claude)     │  │   │
-│  │ • Tables     │    │  │                                  │  │   │
-│  │ • History    │    │  │  Routes to:                      │  │   │
-│  └──────────────┘    │  │  ├── 📊 SQL Analyst Agent        │  │   │
-│                      │  │  │   (Genie Space + SQL Gen)     │  │   │
-│                      │  │  ├── 📚 Knowledge Agent          │  │   │
-│                      │  │  │   (RAG + Vector Search)       │  │   │
-│                      │  │  └── 📈 Viz Agent                │  │   │
-│                      │  │      (Chart recommendations)     │  │   │
-│                      │  └──────────────────────────────────┘  │   │
-│                      │                                        │   │
-│                      │  ┌──────────────────────────────────┐  │   │
-│                      │  │     Databricks Integration        │  │   │
-│                      │  │  • SQL Warehouse (compute)       │  │   │
-│                      │  │  • Unity Catalog (governance)    │  │   │
-│                      │  │  • Vector Search (RAG)           │  │   │
-│                      │  │  • MLflow (evaluation)           │  │   │
-│                      │  └──────────────────────────────────┘  │   │
-│                      └────────────────────────────────────────┘   │
-└────────────────────────────────────────────────────────────────────┘
+                        AI Data Analyst App
+
+  +--------------+       +----------------------------------------+
+  |   React UI   |------>|           FastAPI Backend              |
+  |              |       |                                        |
+  | - Chat input |       |  +----------------------------------+  |
+  | - Charts     |       |  |   Supervisor Agent (Claude)      |  |
+  | - Tables     |       |  |                                  |  |
+  | - History    |       |  |  Routes to:                      |  |
+  +--------------+       |  |  +-- SQL Analyst Agent           |  |
+                         |  |  |   (SQL Gen + Warehouse)       |  |
+                         |  |  +-- Knowledge Agent             |  |
+                         |  |  |   (RAG + Vector Search)       |  |
+                         |  |  +-- Viz Agent                   |  |
+                         |  |      (Chart recommendations)     |  |
+                         |  +----------------------------------+  |
+                         |                                        |
+                         |  +----------------------------------+  |
+                         |  |     Databricks Integration       |  |
+                         |  |  - SQL Warehouse (compute)       |  |
+                         |  |  - Unity Catalog (governance)    |  |
+                         |  |  - Vector Search (RAG)           |  |
+                         |  |  - MLflow (evaluation)           |  |
+                         |  +----------------------------------+  |
+                         +----------------------------------------+
 ```
 
 ---
@@ -103,7 +101,7 @@ ai-data-analyst/
 
 ```bash
 # 1. Clone and enter project
-git clone https://github.com/parozmehta/ai-data-analyst.git
+git clone https://github.com/wanwrick/ai-data-analyst.git
 cd ai-data-analyst
 
 # 2. Run interactive setup
@@ -241,8 +239,8 @@ def sql_accuracy_scorer(inputs, outputs, expectations):
 
 ## 👤 Author
 
-**Paroz Mehta** — GM, Data Warehousing & Engineering | Cornell/Smith EMBA '26
+**Paroz Mehta**
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue)](https://linkedin.com/in/parozmehta)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue)](https://linkedin.com/in/paroz-mehta)
 
 Built with [Claude-Databricks App Template](https://github.com/databricks-solutions/claude-databricks-app-template) and [Databricks AI Dev Kit](https://github.com/databricks-solutions/ai-dev-kit)
