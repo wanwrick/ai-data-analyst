@@ -2,7 +2,13 @@
 
 > A full-stack AI-powered data analyst application that lets users ask natural language questions about their data warehouse and get instant insights with visualizations. Built on Databricks Apps with Claude (Anthropic) as the reasoning engine.
 
+[![tests](https://github.com/wanwrick/ai-data-analyst/actions/workflows/tests.yml/badge.svg)](https://github.com/wanwrick/ai-data-analyst/actions/workflows/tests.yml)
+
 ![Demo](docs/demo.png)
+
+Running, in demo mode, with no Databricks workspace and no API key:
+
+![Screenshot](docs/screenshot.png)
 
 ---
 
@@ -55,35 +61,45 @@
 ai-data-analyst/
 ├── backend/
 │   ├── app.py                    # FastAPI entry point
+│   ├── demo.py                   # Runs everything with no credentials
 │   ├── agents/
-│   │   ├── supervisor.py         # Query routing agent
-│   │   ├── sql_analyst.py        # Natural language → SQL
-│   │   ├── knowledge_agent.py    # RAG over documentation
-│   │   └── viz_agent.py          # Visualization recommendations
+│   │   ├── base.py               # Shared client, response shape, parsing
+│   │   ├── supervisor.py         # Classifies and dispatches, nothing else
+│   │   ├── sql_analyst.py        # Natural language → SQL → summary
+│   │   ├── knowledge_agent.py    # RAG, with a catalog-metadata fallback
+│   │   └── viz_agent.py          # Chart heuristic + model suggestion
 │   ├── services/
 │   │   ├── databricks_client.py  # SDK wrapper
-│   │   ├── vector_search.py      # Knowledge base search
-│   │   └── sql_executor.py       # Safe SQL execution
+│   │   ├── vector_search.py      # Docs index, optional
+│   │   └── sql_executor.py       # Validation and safe execution
 │   ├── models/
-│   │   └── schemas.py            # Pydantic models
+│   │   └── schemas.py            # Pydantic request/response contract
+│   ├── tests/                    # 76 tests, no network
+│   ├── pytest.ini
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx               # Main React app
+│   │   ├── App.tsx               # Shell and health banner
+│   │   ├── styles.css
 │   │   ├── components/
-│   │   │   ├── ChatInterface.tsx  # Message input/display
-│   │   │   ├── QueryResult.tsx    # Table + chart display
-│   │   │   └── SchemaExplorer.tsx # Data catalog browser
+│   │   │   ├── ChatInterface.tsx  # Turns, pending and error states
+│   │   │   ├── QueryResult.tsx    # Chart, table, sources, SQL toggle
+│   │   │   └── SchemaExplorer.tsx # Catalog browser
 │   │   └── api/
-│   │       └── client.ts         # Auto-generated API client
+│   │       └── client.ts         # Typed client, mirrors schemas.py
+│   ├── index.html
+│   ├── tsconfig.json
 │   ├── package.json
 │   └── vite.config.ts
 ├── config/
 │   ├── app.yaml                  # Databricks Apps config
 │   └── .env.example              # Environment variables
+├── .github/workflows/tests.yml   # CI: pytest + tsc + vite build
 ├── docs/
-│   └── demo.png
-├── setup.sh                      # One-click setup
+│   ├── demo.png
+│   └── screenshot.png
+├── setup.sh                      # Dependencies, .env, connectivity check
+├── watch.sh                      # Backend and frontend with reload
 ├── deploy.sh                     # Deploy to Databricks Apps
 └── README.md
 ```
@@ -92,28 +108,29 @@ ai-data-analyst/
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Databricks workspace with SQL Warehouse
-- Claude API key (Anthropic)
-- Python 3.11+, Node.js 18+, Bun
+### Try it with no account
 
-### Setup
+Demo mode swaps the two network calls for fixtures. Routing, the chart
+heuristic, the SQL validator and the whole frontend run for real.
 
 ```bash
-# 1. Clone and enter project
 git clone https://github.com/wanwrick/ai-data-analyst.git
 cd ai-data-analyst
+pip install -r backend/requirements.txt
+(cd frontend && npm install && npm run build)
+(cd backend && uvicorn demo:app --port 8000)
+# open http://localhost:8000
+```
 
-# 2. Run interactive setup
-./setup.sh
-# Configures Databricks auth, installs deps, creates .env
+### Run it against your own workspace
 
-# 3. Start development server
-./watch.sh
-# Backend: http://localhost:8000
-# Frontend: http://localhost:3000
+Prerequisites: a Databricks workspace with a SQL Warehouse, an Anthropic API
+key, Python 3.11+, and Node 18+.
 
-# 4. Deploy to Databricks Apps
+```bash
+./setup.sh      # installs deps, writes .env, checks workspace connectivity
+# fill in DATABRICKS_HOST, DATABRICKS_TOKEN and ANTHROPIC_API_KEY
+./watch.sh      # backend on :8000, frontend on :3000
 ./deploy.sh --create
 ```
 
@@ -223,11 +240,41 @@ def sql_accuracy_scorer(inputs, outputs, expectations):
 
 ## 🛡️ Safety & Governance
 
-- **Read-only SQL**: Only SELECT statements allowed (no DDL/DML)
+- **Read-only SQL**: SELECT only, validated after comments and string literals
+  are stripped, so the check reads structure rather than text
+- **One statement per request**: stacked statements are rejected
 - **Unity Catalog RBAC**: Respects user's data access permissions
 - **Query validation**: SQL injection prevention + cost guardrails
 - **Audit logging**: All queries logged to MLflow for traceability
 - **PII masking**: Leverages Unity Catalog column masks
+
+---
+
+## 🧪 Tests
+
+```bash
+cd backend && pytest -q          # 76 tests, no network calls
+cd frontend && npm run typecheck && npm run build
+```
+
+Agents take their clients by constructor argument, so the tests hand them a
+fake and no test needs a secret. What the suite is actually guarding:
+
+| Area | The failure it catches |
+|------|------------------------|
+| SQL validation | A generated write reaching the warehouse |
+| SQL validation | A legitimate query rejected because `delete` appeared in a string |
+| Stacked statements | `SELECT 1; DROP TABLE t`, including hidden behind a comment |
+| Row cap | A clipped result presented to the user as complete |
+| Chart validation | A chart on a column the result does not contain |
+| Routing | An unparseable label failing the request instead of defaulting |
+| Knowledge fallback | A thin answer with no explanation of why it is thin |
+| API contract | A 500 where the UI needs a 422 it can explain |
+
+Two of these came out of writing the tests rather than from a plan. The old
+`strip("```sql")` call stripped characters off the end of any query ending in a
+backticked identifier, and the old keyword scan ran on raw SQL, so it both
+missed a write after a comment and rejected the word "delete" inside a string.
 
 ---
 

@@ -3,90 +3,128 @@ SQL Executor — Safe SQL execution on Databricks SQL Warehouse.
 
 Safety features:
 - Only SELECT statements allowed
+- Stacked statements rejected
 - Query cost guardrails
 - Timeout enforcement
 - Result size limits
+
+The model writes the SQL, so the model is untrusted input. Validation runs on
+the statement with comments and string literals removed, because scanning the
+raw text both misses `SELECT 1 -- ; DROP TABLE t` and falsely rejects
+`WHERE note = 'please delete this'`.
 """
 
-import re
+from __future__ import annotations
+
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 BLOCKED_KEYWORDS = [
     "DROP", "DELETE", "TRUNCATE", "ALTER", "CREATE", "INSERT",
-    "UPDATE", "MERGE", "GRANT", "REVOKE", "DENY",
+    "UPDATE", "MERGE", "GRANT", "REVOKE", "DENY", "COPY", "RESTORE",
 ]
+
+VALID_STARTS = ("SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN")
 
 MAX_RESULT_ROWS = 1000
 QUERY_TIMEOUT_SECONDS = 120
+
+_LINE_COMMENT = re.compile(r"--[^\n]*")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_SINGLE_QUOTED = re.compile(r"'(?:''|\\.|[^'])*'", re.DOTALL)
+_DOUBLE_QUOTED = re.compile(r'"(?:""|\\.|[^"])*"', re.DOTALL)
+_BACKTICKED = re.compile(r"`[^`]*`")
 
 
 class SQLValidationError(Exception):
     pass
 
 
+def strip_noise(sql: str) -> str:
+    """Remove comments, string literals, and quoted identifiers.
+
+    What is left is the statement's structure, which is the only part that
+    should decide whether the query is allowed to run.
+    """
+    cleaned = _BLOCK_COMMENT.sub(" ", sql)
+    cleaned = _LINE_COMMENT.sub(" ", cleaned)
+    cleaned = _SINGLE_QUOTED.sub("''", cleaned)
+    cleaned = _DOUBLE_QUOTED.sub('""', cleaned)
+    cleaned = _BACKTICKED.sub("``", cleaned)
+    return cleaned
+
+
 class SQLExecutor:
     def __init__(self, db_client):
         self.db_client = db_client
 
-    def validate(self, sql: str):
-        """Validate SQL is safe to execute (read-only)."""
-        normalized = sql.upper().strip()
+    def validate(self, sql: str) -> None:
+        """Raise unless the statement is a single read-only query."""
+        if not sql or not sql.strip():
+            raise SQLValidationError("Empty query")
 
-        # Must start with SELECT, WITH, or SHOW/DESCRIBE
-        valid_starts = ("SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN")
-        if not any(normalized.startswith(s) for s in valid_starts):
+        structure = strip_noise(sql).strip()
+        normalized = structure.upper()
+
+        # A trailing semicolon is fine. A second statement after it is not.
+        if ";" in normalized.rstrip().rstrip(";"):
             raise SQLValidationError(
-                f"Only SELECT queries are allowed. Query starts with: "
-                f"{normalized[:20]}..."
+                "Multiple statements are not allowed. Submit one query at a time."
             )
 
-        # Check for blocked DDL/DML keywords at statement boundaries
+        if not normalized.startswith(VALID_STARTS):
+            first_word = (normalized.split() or ["(empty)"])[0]
+            raise SQLValidationError(
+                f"Only read-only queries are allowed. This one starts with {first_word}."
+            )
+
         for keyword in BLOCKED_KEYWORDS:
-            pattern = rf"\b{keyword}\b"
-            if re.search(pattern, normalized):
+            if re.search(rf"\b{keyword}\b", normalized):
                 raise SQLValidationError(
-                    f"Blocked keyword detected: {keyword}. "
-                    f"Only read-only queries are permitted."
+                    f"Blocked keyword detected: {keyword}. Only read-only queries are permitted."
                 )
 
-        # Ensure LIMIT clause exists (add if missing)
-        if "LIMIT" not in normalized:
-            logger.info("Adding LIMIT clause to query")
-
-        logger.info("✅ SQL validation passed")
+        logger.info("SQL validation passed")
 
     def _add_limit(self, sql: str) -> str:
-        """Add LIMIT clause if not present."""
-        if "LIMIT" not in sql.upper():
-            return f"{sql.rstrip(';')}\nLIMIT {MAX_RESULT_ROWS}"
-        return sql
+        """Cap the result set when the query did not cap itself."""
+        if re.search(r"\bLIMIT\b", strip_noise(sql).upper()):
+            return sql
+        return f"{sql.rstrip().rstrip(';')}\nLIMIT {MAX_RESULT_ROWS}"
 
     async def execute(self, sql: str) -> dict:
-        """Execute SQL and return results as list of dicts."""
-        sql = self._add_limit(sql)
-        logger.info(f"Executing SQL:\n{sql[:200]}...")
+        """Execute SQL and return results as a list of dicts."""
+        capped = self._add_limit(sql)
+        logger.info("Executing SQL: %s", capped.replace("\n", " ")[:200])
 
         try:
             result = self.db_client.client.statement_execution.execute_statement(
                 warehouse_id=self.db_client.warehouse_id,
-                statement=sql,
+                statement=capped,
                 wait_timeout=f"{QUERY_TIMEOUT_SECONDS}s",
             )
 
-            # Extract columns
             columns = [col.name for col in (result.manifest.schema.columns or [])]
 
-            # Extract data as list of dicts
             data = []
             if result.result and result.result.data_array:
                 for row in result.result.data_array:
                     data.append(dict(zip(columns, row)))
 
-            logger.info(f"Query returned {len(data)} rows, {len(columns)} columns")
-            return {"columns": columns, "data": data, "row_count": len(data)}
+            # Hitting the cap exactly almost always means rows were left behind.
+            # The UI says so rather than presenting a partial answer as complete.
+            truncated = len(data) >= MAX_RESULT_ROWS
 
-        except Exception as e:
-            logger.error(f"SQL execution failed: {e}")
+            logger.info("Query returned %d rows, %d columns", len(data), len(columns))
+            return {
+                "columns": columns,
+                "data": data,
+                "row_count": len(data),
+                "truncated": truncated,
+            }
+
+        except Exception as exc:
+            logger.error("SQL execution failed: %s", exc)
             raise
