@@ -42,6 +42,20 @@ class SQLValidationError(Exception):
     pass
 
 
+def _has_top_level_limit(structure: str) -> bool:
+    """True if a LIMIT keyword appears at parenthesis depth zero."""
+    depth = 0
+    for match in re.finditer(r"[()]|\bLIMIT\b", structure.upper()):
+        token = match.group(0)
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            return True
+    return False
+
+
 def strip_noise(sql: str) -> str:
     """Remove comments, string literals, and quoted identifiers.
 
@@ -89,8 +103,13 @@ class SQLExecutor:
         logger.info("SQL validation passed")
 
     def _add_limit(self, sql: str) -> str:
-        """Cap the result set when the query did not cap itself."""
-        if re.search(r"\bLIMIT\b", strip_noise(sql).upper()):
+        """Cap the result set when the query did not cap itself.
+
+        Only a LIMIT at the top level counts. A LIMIT inside a subquery bounds
+        that subquery alone, so treating it as the outer cap let an unbounded
+        result through.
+        """
+        if _has_top_level_limit(strip_noise(sql)):
             return sql
         return f"{sql.rstrip().rstrip(';')}\nLIMIT {MAX_RESULT_ROWS}"
 
@@ -113,9 +132,9 @@ class SQLExecutor:
                 for row in result.result.data_array:
                     data.append(dict(zip(columns, row)))
 
-            # Hitting the cap exactly almost always means rows were left behind.
-            # The UI says so rather than presenting a partial answer as complete.
-            truncated = len(data) >= MAX_RESULT_ROWS
+            # Only a cap we imposed can have cut rows. A user's own LIMIT 1000
+            # returning 1000 rows is a complete answer, not a truncated one.
+            truncated = capped != sql and len(data) >= MAX_RESULT_ROWS
 
             logger.info("Query returned %d rows, %d columns", len(data), len(columns))
             return {

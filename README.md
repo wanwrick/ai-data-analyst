@@ -246,7 +246,7 @@ def sql_accuracy_scorer(inputs, outputs, expectations):
 - **Unity Catalog RBAC**: Respects user's data access permissions
 - **Query validation**: SQL injection prevention + cost guardrails
 - **Audit logging**: All queries logged to MLflow for traceability
-- **PII masking**: Leverages Unity Catalog column masks
+- **PII masking**: Uses Unity Catalog column masks
 
 ---
 

@@ -162,3 +162,14 @@ async def test_result_at_the_cap_is_flagged_truncated():
     result = await module.SQLExecutor(Fake()).execute("SELECT n FROM t")
     assert result["truncated"] is True
     assert result["row_count"] == module.MAX_RESULT_ROWS
+
+
+def test_limit_inside_a_subquery_does_not_count_as_the_outer_cap(executor):
+    """A LIMIT on an inner query bounds that query alone; the outer still needs one."""
+    sql = "SELECT * FROM (SELECT customer_id FROM t LIMIT 5) x"
+    assert "LIMIT 1000" in executor._add_limit(sql)
+
+
+def test_top_level_limit_after_a_subquery_is_respected(executor):
+    sql = "SELECT * FROM (SELECT customer_id FROM t) x LIMIT 20"
+    assert executor._add_limit(sql) == sql
