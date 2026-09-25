@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from services.sql_executor import SQLExecutor, SQLValidationError, strip_noise
+from services.sql_executor import (
+    MAX_RESULT_ROWS,
+    SQLExecutor,
+    SQLValidationError,
+    strip_noise,
+)
 
 
 @pytest.fixture
@@ -92,23 +97,28 @@ def test_error_message_names_the_offending_keyword(executor):
 
 
 def test_limit_is_added_when_missing(executor):
-    assert "LIMIT 1000" in executor._add_limit("SELECT * FROM t")
+    statement, capped = executor._add_limit("SELECT * FROM t")
+    assert capped
+    assert "LIMIT 1000" in statement
 
 
 def test_existing_limit_is_respected(executor):
-    assert executor._add_limit("SELECT * FROM t LIMIT 5") == "SELECT * FROM t LIMIT 5"
+    sql = "SELECT * FROM t LIMIT 5"
+    assert executor._add_limit(sql) == (sql, False)
 
 
 def test_limit_mentioned_only_in_a_string_does_not_count(executor):
     """Otherwise the query runs uncapped because the word appeared in a value."""
     sql = "SELECT * FROM t WHERE label = 'no limit'"
-    assert "LIMIT 1000" in executor._add_limit(sql)
+    statement, capped = executor._add_limit(sql)
+    assert capped
+    assert "LIMIT 1000" in statement
 
 
 def test_trailing_semicolon_does_not_break_the_limit(executor):
-    capped = executor._add_limit("SELECT * FROM t;")
-    assert capped.endswith("LIMIT 1000")
-    assert ";" not in capped
+    statement, _ = executor._add_limit("SELECT * FROM t;")
+    assert statement.endswith("LIMIT 1000")
+    assert ";" not in statement
 
 
 # --- strip_noise ---
@@ -128,13 +138,24 @@ def test_strip_noise_handles_escaped_quotes():
     assert "FROM t WHERE name" in cleaned
 
 
+def test_limit_inside_a_subquery_does_not_count_as_the_outer_cap(executor):
+    """A LIMIT on an inner query bounds that query alone; the outer still needs one."""
+    sql = "SELECT * FROM (SELECT customer_id FROM t LIMIT 5) x"
+    statement, capped = executor._add_limit(sql)
+    assert capped
+    assert "LIMIT 1000" in statement
+
+
+def test_top_level_limit_after_a_subquery_is_respected(executor):
+    sql = "SELECT * FROM (SELECT customer_id FROM t) x LIMIT 20"
+    assert executor._add_limit(sql) == (sql, False)
+
+
 # --- truncation ---
 
 
-@pytest.mark.asyncio
-async def test_result_at_the_cap_is_flagged_truncated():
-    """A silently clipped result presented as complete is a wrong answer."""
-    from services import sql_executor as module
+def _warehouse_returning(rows: list[list]):
+    """A stand-in for the Databricks client that answers every statement with rows."""
 
     class Column:
         def __init__(self, name):
@@ -145,7 +166,6 @@ async def test_result_at_the_cap_is_flagged_truncated():
             class statement_execution:
                 @staticmethod
                 def execute_statement(**kwargs):
-                    rows = [[i] for i in range(module.MAX_RESULT_ROWS)]
                     return type(
                         "R",
                         (),
@@ -159,17 +179,23 @@ async def test_result_at_the_cap_is_flagged_truncated():
 
         warehouse_id = "w"
 
-    result = await module.SQLExecutor(Fake()).execute("SELECT n FROM t")
+    return Fake()
+
+
+@pytest.mark.asyncio
+async def test_result_at_the_cap_is_flagged_truncated():
+    """A silently clipped result presented as complete is a wrong answer."""
+    rows = [[i] for i in range(MAX_RESULT_ROWS)]
+    result = await SQLExecutor(_warehouse_returning(rows)).execute("SELECT n FROM t")
     assert result["truncated"] is True
-    assert result["row_count"] == module.MAX_RESULT_ROWS
+    assert result["row_count"] == MAX_RESULT_ROWS
 
 
-def test_limit_inside_a_subquery_does_not_count_as_the_outer_cap(executor):
-    """A LIMIT on an inner query bounds that query alone; the outer still needs one."""
-    sql = "SELECT * FROM (SELECT customer_id FROM t LIMIT 5) x"
-    assert "LIMIT 1000" in executor._add_limit(sql)
-
-
-def test_top_level_limit_after_a_subquery_is_respected(executor):
-    sql = "SELECT * FROM (SELECT customer_id FROM t) x LIMIT 20"
-    assert executor._add_limit(sql) == sql
+@pytest.mark.asyncio
+async def test_users_own_limit_at_the_cap_is_not_truncated():
+    """LIMIT 1000 returning 1000 rows is the complete answer the user asked for."""
+    rows = [[i] for i in range(MAX_RESULT_ROWS)]
+    sql = f"SELECT n FROM t LIMIT {MAX_RESULT_ROWS}"
+    result = await SQLExecutor(_warehouse_returning(rows)).execute(sql)
+    assert result["truncated"] is False
+    assert result["row_count"] == MAX_RESULT_ROWS

@@ -36,6 +36,7 @@ _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 _SINGLE_QUOTED = re.compile(r"'(?:''|\\.|[^'])*'", re.DOTALL)
 _DOUBLE_QUOTED = re.compile(r'"(?:""|\\.|[^"])*"', re.DOTALL)
 _BACKTICKED = re.compile(r"`[^`]*`")
+_PAREN_OR_LIMIT = re.compile(r"[()]|\bLIMIT\b", re.IGNORECASE)
 
 
 class SQLValidationError(Exception):
@@ -45,7 +46,7 @@ class SQLValidationError(Exception):
 def _has_top_level_limit(structure: str) -> bool:
     """True if a LIMIT keyword appears at parenthesis depth zero."""
     depth = 0
-    for match in re.finditer(r"[()]|\bLIMIT\b", structure.upper()):
+    for match in _PAREN_OR_LIMIT.finditer(structure):
         token = match.group(0)
         if token == "(":
             depth += 1
@@ -102,26 +103,27 @@ class SQLExecutor:
 
         logger.info("SQL validation passed")
 
-    def _add_limit(self, sql: str) -> str:
+    def _add_limit(self, sql: str) -> tuple[str, bool]:
         """Cap the result set when the query did not cap itself.
 
-        Only a LIMIT at the top level counts. A LIMIT inside a subquery bounds
-        that subquery alone, so treating it as the outer cap let an unbounded
+        Returns the statement to run and whether a cap was added. Only a
+        LIMIT at the top level counts: a LIMIT inside a subquery bounds that
+        subquery alone, so treating it as the outer cap let an unbounded
         result through.
         """
         if _has_top_level_limit(strip_noise(sql)):
-            return sql
-        return f"{sql.rstrip().rstrip(';')}\nLIMIT {MAX_RESULT_ROWS}"
+            return sql, False
+        return f"{sql.rstrip().rstrip(';')}\nLIMIT {MAX_RESULT_ROWS}", True
 
     async def execute(self, sql: str) -> dict:
         """Execute SQL and return results as a list of dicts."""
-        capped = self._add_limit(sql)
-        logger.info("Executing SQL: %s", capped.replace("\n", " ")[:200])
+        statement, capped = self._add_limit(sql)
+        logger.info("Executing SQL: %s", statement.replace("\n", " ")[:200])
 
         try:
             result = self.db_client.client.statement_execution.execute_statement(
                 warehouse_id=self.db_client.warehouse_id,
-                statement=capped,
+                statement=statement,
                 wait_timeout=f"{QUERY_TIMEOUT_SECONDS}s",
             )
 
@@ -134,7 +136,7 @@ class SQLExecutor:
 
             # Only a cap we imposed can have cut rows. A user's own LIMIT 1000
             # returning 1000 rows is a complete answer, not a truncated one.
-            truncated = capped != sql and len(data) >= MAX_RESULT_ROWS
+            truncated = capped and len(data) >= MAX_RESULT_ROWS
 
             logger.info("Query returned %d rows, %d columns", len(data), len(columns))
             return {
