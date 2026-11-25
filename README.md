@@ -1,4 +1,4 @@
-# 🤖 AI Data Analyst — Claude + Databricks Agent App
+# AI Data Analyst: Claude + Databricks Agent App
 
 > A full-stack AI-powered data analyst application that lets users ask natural language questions about their data warehouse and get instant insights with visualizations. Built on Databricks Apps with Claude (Anthropic) as the reasoning engine.
 
@@ -18,7 +18,7 @@ Running, in demo mode, with no Databricks workspace and no API key:
 - **Natural Language → SQL**: Claude translates business questions into optimized SQL
 - **RAG Knowledge Base**: Vector search over data documentation for context-aware answers
 - **Interactive Visualizations**: Auto-generated charts based on query results
-- **Databricks Apps Deployment**: Production-ready full-stack app on Databricks
+- **Databricks Apps Deployment**: Full-stack app packaged for Databricks Apps
 - **MLflow Evaluation**: Quality monitoring with custom scorers for response accuracy
 
 ---
